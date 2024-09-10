@@ -53,6 +53,7 @@ pub mod ogc_reserve {
         ctx.accounts.lock_account.reserve = reserve;
         ctx.accounts.lock_account.last_claim_epoch = epoch;
         ctx.accounts.lock_account.unlock_epoch = epoch + LOCK_TIME_EPOCH;
+        ctx.accounts.lock_account.last_check_epoch = epoch;
         Ok(())
     }
     pub fn unlock(ctx: Context<Unlock>, amount: u64) -> Result<()> {
@@ -88,7 +89,7 @@ pub mod ogc_reserve {
             return Err(CustomError::DidNotWin.into())
         }
         // fix the amount calculation
-        let amount = ctx.accounts.lock_account.amount / ctx.accounts.prev_epoch_account.reserve_amounts[ctx.accounts.lock_account.reserve as usize];
+        let amount = (ctx.accounts.lock_account.amount * REWARD_AMOUNT) / ctx.accounts.prev_epoch_account.reserve_amounts[ctx.accounts.lock_account.reserve as usize];
         if amount > 0 {
             transfer(
                 CpiContext::new_with_signer(
@@ -103,6 +104,14 @@ pub mod ogc_reserve {
                 amount
             )?;
         }
+        ctx.accounts.lock_account.last_claim_epoch = curr_epoch;
+        Ok(())
+    }
+    pub fn check_in(ctx: Context<CheckIn>, epoch: u64, reserve: u8) -> Result<()> {
+        if epoch != ctx.accounts.global_account.epoch || epoch <= ctx.accounts.lock_account.last_check_epoch {
+            return Err(CustomError::InvalidEpoch.into())
+        }
+        ctx.accounts.epoch_account.reserve_amounts[reserve as usize] += ctx.accounts.lock_account.amount;
         Ok(())
     }
 }
@@ -139,6 +148,7 @@ pub struct LockAccount {
     amount: u64,
     unlock_epoch: u64,
     last_claim_epoch: u64,
+    last_check_epoch: u64,
 }
 
 #[derive(Accounts)]
@@ -226,7 +236,7 @@ pub struct Lock<'info> {
     #[account(
         init,
         payer = signer,
-        space = 8 + 32 + 1 + 8 + 8 + 8
+        space = 8 + 32 + 1 + 8 + 8 + 8 + 8
     )]
     pub lock_account: Account<'info, LockAccount>,
     #[account(
@@ -329,4 +339,25 @@ pub struct Claim<'info> {
     pub program_holder_account: Account<'info, TokenAccount>,
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+#[instruction(epoch: u64)]
+pub struct CheckIn<'info> {
+    pub signer: Signer<'info>,
+    #[account(
+        constraint = lock_account.owner == signer.key()
+    )]
+    pub lock_account: Account<'info, LockAccount>,
+    #[account(
+        mut,
+        seeds = [b"epoch", epoch.to_le_bytes().as_ref()],
+        bump,
+    )]
+    pub epoch_account: Account<'info, EpochAccount>,
+    #[account(
+        seeds = [b"global"],
+        bump,
+    )]
+    pub global_account: Account<'info, GlobalAccount>,
 }
