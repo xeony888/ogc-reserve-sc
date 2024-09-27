@@ -1,198 +1,254 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{Mint, Token, TokenAccount};
+use anchor_spl::token::{Mint, Token, TokenAccount, transfer, Transfer};
 declare_id!("3WLtmZnhXgctq98BeEKZuXkKCAgMuDNzssrtA6KXqXxW");
 
-const LOCK_TIME_EPOCH: u64 = 100;
-const EPOCH_LENGTH: u64 = 10; // seconds
-const REWARD_AMOUNT: u64 = 100000;
+const ADMIN: &str = "Ddi1GaugnX9yQz1WwK1b12m4o23rK1krZQMcnt2aNW97";
+const EPOCH_FIRST_END_TIME: u64 = 0; // use this to set first end time, making epochs end at a specific time of the day
 #[program]
 pub mod ogc_reserve {
-    use anchor_spl::token::{transfer, Transfer};
-
     use super::*;
 
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-        ctx.accounts.global_account.mint = ctx.accounts.mint.key();
+        ctx.accounts.global_data_account.epoch_lock_time = 100;
+        ctx.accounts.global_data_account.epoch_end_time = EPOCH_FIRST_END_TIME;
+        ctx.accounts.global_data_account.epoch_length = 10;
+        ctx.accounts.global_data_account.reward_percent = 5;
+        ctx.accounts.global_data_account.mint = ctx.accounts.mint.key();
+        Ok(())
+    }
+    pub fn deposit_ogg(ctx: Context<DepositOgg>, amount: u64) -> Result<()> {
+        transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.signer_token_account.to_account_info(),
+                    to: ctx.accounts.program_holder_account.to_account_info(),
+                    authority: ctx.accounts.signer.to_account_info()
+                }
+            ),
+            amount
+        )?;
+        Ok(())
+    }
+    pub fn withdraw_ogg(ctx: Context<WithdrawOgg>, amount: u64) -> Result<()> {
+        transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.signer_token_account.to_account_info(),
+                    to: ctx.accounts.program_holder_account.to_account_info(),
+                    authority: ctx.accounts.program_authority.to_account_info()
+                },
+                &[&[b"auth", &[ctx.bumps.program_authority]]]
+            ),
+            amount,
+        )?;
         Ok(())
     }
     pub fn new_epoch(ctx: Context<NewEpoch>, epoch: u64) -> Result<()> {
-        if epoch != ctx.accounts.global_account.epoch + 1 {
-            return Err(CustomError::InvalidEpoch.into())
+        let time = Clock::get()?.unix_timestamp as u64;
+        if time < ctx.accounts.global_data_account.epoch_end_time {
+            return Err(CustomError::EpochNotOver.into())
         }
-        let mut max_index: usize = 0;
+        ctx.accounts.global_data_account.epoch += 1;
+        ctx.accounts.global_data_account.epoch_end_time += ctx.accounts.global_data_account.epoch_length;
         let mut max: u64 = 0;
+        let mut max_index: usize = 0;
         for i in 0..16 {
-            if ctx.accounts.prev_epoch_account.reserve_amounts[i] > max {
-                max = ctx.accounts.prev_epoch_account.reserve_amounts[i];
+            if ctx.accounts.prev_epoch_account.fields[i] > max {
+                max = ctx.accounts.prev_epoch_account.fields[i];
                 max_index = i;
             }
         }
-        ctx.accounts.prev_epoch_account.winner = max_index as u8;
-        ctx.accounts.global_account.epoch += 1;
-        ctx.accounts.epoch_account.epoch = epoch;
+        ctx.accounts.prev_epoch_account.winner = max_index as u64;
         Ok(())
     }
-    pub fn lock(ctx: Context<Lock>, epoch: u64, amount: u64, reserve: u8) -> Result<()> {
-        if epoch != ctx.accounts.global_account.epoch {
-            return Err(CustomError::InvalidEpoch.into())
+    pub fn lock(ctx: Context<Lock>, epoch: u64, amount: u64) -> Result<()> {
+        let time = Clock::get()?.unix_timestamp as u64;
+        if ctx.accounts.global_data_account.epoch_end_time > time {
+            return Err(CustomError::EpochExpired.into())
         }
         transfer(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
                 Transfer {
                     from: ctx.accounts.signer_token_account.to_account_info(),
-                    to: ctx.accounts.holder_account.to_account_info(),
+                    to: ctx.accounts.signer_holder_account.to_account_info(),
                     authority: ctx.accounts.signer.to_account_info()
                 }
             ),
-            amount,
+            amount
         )?;
-        ctx.accounts.epoch_account.reserve_amounts[reserve as usize] += amount;
-        ctx.accounts.lock_account.owner = ctx.accounts.signer.key();
+        ctx.accounts.lock_account.unlock_epoch = ctx.accounts.global_data_account.epoch + ctx.accounts.global_data_account.epoch_lock_time;
         ctx.accounts.lock_account.amount = amount;
-        ctx.accounts.lock_account.reserve = reserve;
-        ctx.accounts.lock_account.last_claim_epoch = epoch;
-        ctx.accounts.lock_account.unlock_epoch = epoch + LOCK_TIME_EPOCH;
-        ctx.accounts.lock_account.last_check_epoch = epoch;
+        ctx.accounts.user_data_account.amount += amount;
         Ok(())
     }
-    pub fn unlock(ctx: Context<Unlock>, amount: u64) -> Result<()> {
-        if ctx.accounts.global_account.epoch < ctx.accounts.lock_account.unlock_epoch + 100 {
-            return Err(CustomError::NotUnlocked.into())
-        }
-        if ctx.accounts.global_account.epoch == ctx.accounts.lock_account.last_claim_epoch {
-            return Err(CustomError::ClaimedThisEpoch.into())
+    pub fn unlock(ctx: Context<Unlock>, epoch: u64, amount: u64) -> Result<()> {
+        if amount > ctx.accounts.lock_account.amount {
+            return Err(CustomError::ExceedsBalanceOfLockAccount.into())
         }
         transfer(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 Transfer {
-                    from: ctx.accounts.holder_account.to_account_info(),
+                    from: ctx.accounts.signer_holder_account.to_account_info(),
                     to: ctx.accounts.signer_token_account.to_account_info(),
                     authority: ctx.accounts.program_authority.to_account_info()
                 },
-                &[&[b"auth", &[ctx.bumps.program_authority]]]
+                &[&[b"auth", &[ctx.bumps.lock_account]]]
             ),
             amount
         )?;
+        ctx.accounts.lock_account.amount -= amount;
+        ctx.accounts.user_data_account.amount -= amount;
+        if ctx.accounts.lock_account.amount == 0 {
+            ctx.accounts.lock_account.close(ctx.accounts.signer.to_account_info())?;
+        }
         Ok(())
     }
-    pub fn claim(ctx: Context<Claim>, prev_epoch: u64, curr_epoch: u64) -> Result<()> {
-        if curr_epoch != ctx.accounts.global_account.epoch || prev_epoch >= curr_epoch {
-            return Err(CustomError::InvalidEpoch.into())
+    pub fn vote(ctx: Context<Vote>, epoch: u64, amounts: [u64; 16]) -> Result<()> {
+        if epoch != ctx.accounts.global_data_account.epoch {
+            return Err(CustomError::IncorrectEpochNum.into())
         }
-        if ctx.accounts.lock_account.last_claim_epoch >= prev_epoch {
-            // new error message
-            return Err(CustomError::InvalidEpoch.into())
+        let mut sum = 0;
+        for i in 0..16 {
+            ctx.accounts.epoch_account.fields[i] += amounts[i];
+            ctx.accounts.vote_account.fields[i] = amounts[i];
+            sum += amounts[i];
         }
-        if ctx.accounts.prev_epoch_account.winner != ctx.accounts.lock_account.reserve {
-            return Err(CustomError::DidNotWin.into())
+        if sum > ctx.accounts.user_data_account.amount {
+            return Err(CustomError::NotEnoughStaked.into())
         }
-        // fix the amount calculation
-        let amount = (ctx.accounts.lock_account.amount * REWARD_AMOUNT) / ctx.accounts.prev_epoch_account.reserve_amounts[ctx.accounts.lock_account.reserve as usize];
-        if amount > 0 {
+        Ok(())
+    }
+    pub fn claim(ctx: Context<Claim>, epoch: u64) -> Result<()> {
+        if epoch >= ctx.accounts.global_data_account.epoch {
+            return Err(CustomError::IncorrectEpochNum.into())
+        }
+        let total_reward = ctx.accounts.program_holder_account.amount * ctx.accounts.global_data_account.reward_percent / 100;
+        let reward = ctx.accounts.vote_account.fields[ctx.accounts.epoch_account.winner as usize] * total_reward / ctx.accounts.epoch_account.fields[ctx.accounts.epoch_account.winner as usize];
+        if reward > 0 {
             transfer(
                 CpiContext::new_with_signer(
                     ctx.accounts.token_program.to_account_info(),
                     Transfer {
                         from: ctx.accounts.program_holder_account.to_account_info(),
-                        to: ctx.accounts.signer_token_account.to_account_info(),
-                        authority: ctx.accounts.program_authority.to_account_info(),
+                        to: ctx.accounts.signer_holder_account.to_account_info(),
+                        authority: ctx.accounts.program_authority.to_account_info()
                     },
                     &[&[b"auth", &[ctx.bumps.program_authority]]]
                 ),
-                amount
+                reward,
             )?;
         }
-        ctx.accounts.lock_account.last_claim_epoch = curr_epoch;
-        Ok(())
-    }
-    pub fn check_in(ctx: Context<CheckIn>, epoch: u64, reserve: u8) -> Result<()> {
-        if epoch != ctx.accounts.global_account.epoch || epoch <= ctx.accounts.lock_account.last_check_epoch {
-            return Err(CustomError::InvalidEpoch.into())
-        }
-        ctx.accounts.epoch_account.reserve_amounts[reserve as usize] += ctx.accounts.lock_account.amount;
         Ok(())
     }
 }
+
 #[error_code]
 pub enum CustomError {
-    #[msg("Invalid Epoch")]
-    InvalidEpoch,
-    #[msg("Not unlocked")]
-    NotUnlocked,
-    #[msg("Claimed this epoch")]
-    ClaimedThisEpoch,
-    #[msg("Did not win")]
-    DidNotWin
+    #[msg("Invalid mint account")]
+    InvalidMintAccount,
+    #[msg("Incorrect epoch num")]
+    IncorrectEpochNum,
+    #[msg("Epoch Expired")]
+    EpochExpired,
+    #[msg("Account not unlocked")]
+    AccountNotUnlocked,
+    #[msg("Exceeds balance of lock account")]
+    ExceedsBalanceOfLockAccount,
+    #[msg("Epoch not over")]
+    EpochNotOver,
+    #[msg("Not enough staked")]
+    NotEnoughStaked,
+    #[msg("Invalid signer")]
+    InvalidSigner
 }
 
-// users lock their ogg for a certain amount of time. They can claim a fractional amount of ogc if their reserve wom
-// Each new epoch, they must check in to stake their ogg for the epoch. 
-// They can claim at any time
 #[account]
-pub struct GlobalAccount {
-    epoch: u64,
-    mint: Pubkey,
+pub struct GlobalDataAccount {
+    pub epoch: u64,
+    pub epoch_end_time: u64,
+    pub epoch_lock_time: u64,
+    pub epoch_length: u64,
+    pub reward_percent: u64,
+    pub mint: Pubkey,
 }
-#[account]
-pub struct EpochAccount {
-    epoch: u64,
-    reserve_amounts: [u64; 16],
-    winner: u8,
-}
-#[account]
-pub struct LockAccount {
-    owner: Pubkey,
-    reserve: u8,
-    amount: u64,
-    unlock_epoch: u64,
-    last_claim_epoch: u64,
-    last_check_epoch: u64,
-}
-
 #[derive(Accounts)]
 pub struct Initialize<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
+    pub mint: Account<'info, Mint>,
     #[account(
         init,
         seeds = [b"global"],
         bump,
+        space = 8 + 8 + 8 + 8 + 8 + 8 + 32,
         payer = signer,
-        space = 8 + 8 + 32,
     )]
-    pub global_account: Account<'info, GlobalAccount>,
-    #[account(
-        init,
-        seeds = [b"epoch", 0_u64.to_le_bytes().as_ref()],
-        bump,
-        payer = signer,
-        space = 8 + 8 + 1 + 8 * 16
-    )]
-    pub first_epoch_account: Account<'info, EpochAccount>,
-    pub mint: Account<'info, Mint>,
-    #[account(
-        init,
-        seeds = [b"auth"],
-        bump,
-        payer = signer,
-        space = 8,
-    )]
-    pub program_authority: AccountInfo<'info>,
+    pub global_data_account: Account<'info, GlobalDataAccount>,
     #[account(
         init,
         seeds = [b"holder"],
         bump,
-        payer = signer,
         token::mint = mint,
         token::authority = program_authority,
+        payer = signer,
     )]
     pub program_holder_account: Account<'info, TokenAccount>,
+    #[account(
+        init,
+        seeds = [b"auth"],
+        bump,
+        space = 8,
+        payer = signer,
+    )]
+    /// CHECK: 
+    pub program_authority: AccountInfo<'info>,
     pub system_program: Program<'info, System>,
-    pub token_program: Program<'info, Token>
+    pub token_program: Program<'info, Token>,
 }
-
+#[derive(Accounts)]
+pub struct DepositOgg<'info> {
+    pub signer: Signer<'info>,
+    #[account(mut)]
+    pub signer_token_account: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        seeds = [b"holder"],
+        bump,
+    )]
+    pub program_holder_account: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+}
+#[derive(Accounts)]
+pub struct WithdrawOgg<'info> {
+    #[account(
+        constraint = signer.key() == ADMIN.parse::<Pubkey>().unwrap() @ CustomError::InvalidSigner
+    )]
+    pub signer: Signer<'info>,
+    #[account(mut)]
+    pub signer_token_account: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        seeds = [b"holder"],
+        bump,
+    )]
+    pub program_holder_account: Account<'info, TokenAccount>,
+    #[account(
+        seeds = [b"auth"],
+        bump,
+    )]
+    /// CHECK: 
+    pub program_authority: AccountInfo<'info>,
+    pub token_program: Program<'info, Token>,
+}
+#[account]
+pub struct EpochAccount {
+    pub fields: [u64; 16],
+    pub winner: u64,
+}
 #[derive(Accounts)]
 #[instruction(epoch: u64)]
 pub struct NewEpoch<'info> {
@@ -203,7 +259,7 @@ pub struct NewEpoch<'info> {
         seeds = [b"epoch", epoch.to_le_bytes().as_ref()],
         bump,
         payer = signer,
-        space = 8 + 8 + 1 + 8 * 16
+        space = 8 + 8 + 8 * 16
     )]
     pub epoch_account: Account<'info, EpochAccount>,
     #[account(
@@ -216,141 +272,172 @@ pub struct NewEpoch<'info> {
         mut,
         seeds = [b"global"],
         bump,
+        constraint = global_data_account.epoch + 1 == epoch @ CustomError::IncorrectEpochNum
     )]
-    pub global_account: Account<'info, GlobalAccount>,
-    pub system_program: Program<'info, System>
+    pub global_data_account: Account<'info, GlobalDataAccount>,
+    pub system_program: Program<'info, System>,
 }
+
+#[account]
+pub struct LockAccount {
+    pub unlock_epoch: u64,
+    pub amount: u64,
+}
+#[account]
+pub struct UserDataAccount {
+    pub amount: u64,
+}
+
+// maybe add this, maybe not
+// #[account]
+// pub struct UserStatsAccount {
+//     pub epochs: u64,
+//     pub claimed: u64,
+// }
 #[derive(Accounts)]
 #[instruction(epoch: u64)]
 pub struct Lock<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
-    #[account(mut)]
     pub signer_token_account: Account<'info, TokenAccount>,
     #[account(
-        mut,
-        seeds = [b"epoch", epoch.to_le_bytes().as_ref()],
-        bump,
-    )]
-    pub epoch_account: Account<'info, EpochAccount>,
-    #[account(
-        init,
-        payer = signer,
-        space = 8 + 32 + 1 + 8 + 8 + 8 + 8
-    )]
-    pub lock_account: Account<'info, LockAccount>,
-    #[account(
-        seeds = [b"global"],
-        bump,
-    )]
-    pub global_account: Account<'info, GlobalAccount>,
-    #[account(
-        constraint = mint.key() == global_account.mint,
+        constraint = mint.key() == global_data_account.mint @ CustomError::InvalidMintAccount
     )]
     pub mint: Account<'info, Mint>,
     #[account(
-        init,
-        seeds = [b"holder", lock_account.key().as_ref()],
+        init_if_needed,
+        seeds = [b"holder", signer.key().as_ref()],
         bump,
-        payer = signer,
         token::mint = mint,
         token::authority = program_authority,
+        payer = signer,
     )]
-    pub holder_account: Account<'info, TokenAccount>,
+    pub signer_holder_account: Account<'info, TokenAccount>,
     #[account(
-        seeds = [b"auth"],
+        init_if_needed,
+        seeds = [b"lock", signer.key().as_ref(), epoch.to_le_bytes().as_ref()],
         bump,
-    )]
-    pub program_authority: AccountInfo<'info>,
-    pub system_program: Program<'info, System>,
-    pub token_program: Program<'info, Token>,
-}
-
-#[derive(Accounts)]
-pub struct Unlock<'info> {
-    #[account(mut)]
-    pub signer: Signer<'info>,
-    pub signer_token_account: Account<'info, TokenAccount>,
-    #[account(
-        mut,
-        close = signer,
-        constraint = lock_account.owner == signer.key()
+        payer = signer,
+        space = 8 + 8 + 8
     )]
     pub lock_account: Account<'info, LockAccount>,
     #[account(
-        mut,
-        seeds = [b"holder", lock_account.key().as_ref()],
+        init_if_needed,
+        seeds = [b"data", signer.key().as_ref()],
         bump,
+        payer = signer,
+        space = 8 + 8
     )]
-    pub holder_account: Account<'info, TokenAccount>,
+    pub user_data_account: Account<'info, UserDataAccount>,
+    #[account(
+        seeds = [b"global"],
+        bump,
+        constraint = epoch == global_data_account.epoch @ CustomError::IncorrectEpochNum
+    )]
+    pub global_data_account: Account<'info, GlobalDataAccount>,
     #[account(
         seeds = [b"auth"],
         bump,
     )]
     /// CHECK: 
     pub program_authority: AccountInfo<'info>,
-    #[account(
-        seeds = [b"global"],
-        bump,
-    )]
-    pub global_account: Account<'info, GlobalAccount>,
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
 }
-
 #[derive(Accounts)]
-#[instruction(prev_epoch: u64, curr_epoch: u64)]
-pub struct Claim<'info> {
+#[instruction(epoch: u64)]
+pub struct Unlock<'info> {
     pub signer: Signer<'info>,
-    #[account(mut)]
     pub signer_token_account: Account<'info, TokenAccount>,
     #[account(
+        constraint = mint.key() == global_data_account.mint @ CustomError::InvalidMintAccount
+    )]
+    pub mint: Account<'info, Mint>,
+    #[account(
         mut,
-        constraint = lock_account.owner == signer.key()
+        seeds = [b"holder", signer.key().as_ref()],
+        bump,
+    )]
+    pub signer_holder_account: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        seeds = [b"lock", signer.key().as_ref(), epoch.to_le_bytes().as_ref()],
+        bump,
+        constraint = lock_account.unlock_epoch <= global_data_account.epoch @ CustomError::AccountNotUnlocked
     )]
     pub lock_account: Account<'info, LockAccount>,
     #[account(
         mut,
-        seeds = [b"epoch", prev_epoch.to_le_bytes().as_ref()],
+        seeds = [b"data", signer.key().as_ref()],
         bump,
     )]
-    pub prev_epoch_account: Account<'info, EpochAccount>,
-    #[account(
-        mut,
-        seeds = [b"epoch", curr_epoch.to_le_bytes().as_ref()],
-        bump,
-    )]
-    pub curr_epoch_account: Account<'info, EpochAccount>,
+    pub user_data_account: Account<'info, UserDataAccount>,
     #[account(
         seeds = [b"global"],
         bump,
     )]
-    pub global_account: Account<'info, GlobalAccount>,
+    pub global_data_account: Account<'info, GlobalDataAccount>,
     #[account(
         seeds = [b"auth"],
         bump,
     )]
+    /// CHECK: 
     pub program_authority: AccountInfo<'info>,
-    #[account(
-        mut,
-        seeds = [b"holder"],
-        bump,
-    )]
-    pub program_holder_account: Account<'info, TokenAccount>,
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
 }
 
+#[account]
+pub struct VoteAccount {
+    fields: [u64; 16]
+}
 #[derive(Accounts)]
 #[instruction(epoch: u64)]
-pub struct CheckIn<'info> {
+pub struct Vote<'info> {
+    #[account(mut)]
     pub signer: Signer<'info>,
     #[account(
-        constraint = lock_account.owner == signer.key()
+        init,
+        seeds = [b"vote", signer.key().as_ref(), epoch.to_le_bytes().as_ref()],
+        bump,
+        payer = signer,
+        space = 8 + 16 * 8,
     )]
-    pub lock_account: Account<'info, LockAccount>,
+    pub vote_account: Account<'info, VoteAccount>,
     #[account(
         mut,
+        seeds = [b"epoch", epoch.to_le_bytes().as_ref()],
+        bump,
+    )]
+    pub epoch_account: Account<'info, EpochAccount>,
+    #[account(
+        seeds = [b"data", signer.key().as_ref()],
+        bump,
+    )]
+    pub user_data_account: Account<'info, UserDataAccount>,
+    #[account(
+        seeds = [b"global"],
+        bump,
+    )]
+    pub global_data_account: Account<'info, GlobalDataAccount>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(epoch: u64)]
+pub struct Claim<'info> {
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    #[account(mut)]
+    pub signer_holder_account: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        seeds = [b"vote", signer.key().as_ref(), epoch.to_le_bytes().as_ref()],
+        bump,
+        close = signer
+    )]
+    pub vote_account: Account<'info, VoteAccount>,
+    #[account(
         seeds = [b"epoch", epoch.to_le_bytes().as_ref()],
         bump,
     )]
@@ -359,5 +446,19 @@ pub struct CheckIn<'info> {
         seeds = [b"global"],
         bump,
     )]
-    pub global_account: Account<'info, GlobalAccount>,
+    pub global_data_account: Account<'info, GlobalDataAccount>,
+    #[account(
+        mut,
+        seeds = [b"holder"],
+        bump,
+    )]
+    pub program_holder_account: Account<'info, TokenAccount>,
+    #[account(
+        seeds = [b"auth"],
+        bump,
+    )]
+    /// CHECK: 
+    pub program_authority: AccountInfo<'info>,
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
 }
