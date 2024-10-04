@@ -8,13 +8,13 @@ const EPOCH_FIRST_END_TIME: u64 = 0; // use this to set first end time, making e
 pub mod ogc_reserve {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>, ogg_mint: Pubkey) -> Result<()> {
+    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
         ctx.accounts.global_data_account.epoch_lock_time = 1;
         ctx.accounts.global_data_account.epoch_end_time = EPOCH_FIRST_END_TIME;
         ctx.accounts.global_data_account.epoch_length = 10;
         ctx.accounts.global_data_account.reward_percent = 5;
         ctx.accounts.global_data_account.ogc_mint = ctx.accounts.ogc_mint.key();
-        ctx.accounts.global_data_account.ogg_mint = ogg_mint.key();
+        ctx.accounts.global_data_account.ogg_mint = ctx.accounts.ogg_mint.key();
         Ok(())
     }
     pub fn modify_global_data(ctx: Context<ModifyGlobalData>, epoch_lock_time: u64, epoch_length: u64, reward_percent: u64) -> Result<()> {
@@ -195,6 +195,7 @@ pub struct Initialize<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
     pub ogc_mint: Account<'info, Mint>,
+    pub ogg_mint: Account<'info, Mint>,
     #[account(
         init,
         seeds = [b"global"],
