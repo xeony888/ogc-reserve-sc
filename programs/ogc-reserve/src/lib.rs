@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, Token, TokenAccount, transfer, Transfer};
-declare_id!("3WLtmZnhXgctq98BeEKZuXkKCAgMuDNzssrtA6KXqXxW");
+declare_id!("3Z6QJxHxE6Po9L6Tkxwwc4cVSnckE9LuozowaicE2eSM");
 
 const ADMIN: &str = "Ddi1GaugnX9yQz1WwK1b12m4o23rK1krZQMcnt2aNW97";
 const EPOCH_FIRST_END_TIME: u64 = 0; // use this to set first end time, making epochs end at a specific time of the day
@@ -14,6 +14,12 @@ pub mod ogc_reserve {
         ctx.accounts.global_data_account.epoch_length = 10;
         ctx.accounts.global_data_account.reward_percent = 5;
         ctx.accounts.global_data_account.mint = ctx.accounts.mint.key();
+        Ok(())
+    }
+    pub fn modify_global_data(ctx: Context<ModifyGlobalData>, epoch_lock_time: u64, epoch_length: u64, reward_percent: u64) -> Result<()> {
+        ctx.accounts.global_data_account.epoch_lock_time = epoch_lock_time;
+        ctx.accounts.global_data_account.reward_percent = reward_percent;
+        ctx.accounts.global_data_account.epoch_length = epoch_length;
         Ok(())
     }
     pub fn deposit_ogg(ctx: Context<DepositOgg>, amount: u64) -> Result<()> {
@@ -223,6 +229,19 @@ pub struct Initialize<'info> {
     pub first_epoch_account: Account<'info, EpochAccount>,
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
+}
+#[derive(Accounts)]
+pub struct ModifyGlobalData<'info> {
+    #[account(
+        constraint = signer.key() == ADMIN.parse::<Pubkey>().unwrap() @ CustomError::InvalidSigner
+    )]
+    pub signer: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [b"global"],
+        bump,
+    )]
+    pub global_data_account: Account<'info, GlobalDataAccount>,
 }
 #[derive(Accounts)]
 pub struct DepositOgg<'info> {

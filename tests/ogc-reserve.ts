@@ -225,4 +225,15 @@ describe("ogc-reserve", () => {
       assert(false, "vote account not deleted");
     } catch (e) { }
   });
+  it("modifies global data", async () => {
+    await program.methods.modifyGlobalData(new BN(100), new BN(100), new BN(100)).accounts({
+      signer: wallet.publicKey
+    }).rpc();
+    const [globalDataAccountAddress] = PublicKey.findProgramAddressSync(
+      [Buffer.from("global")],
+      program.programId
+    );
+    const globalDataAccount = await program.account.globalDataAccount.fetch(globalDataAccountAddress);
+    assert(globalDataAccount.epochLength.eq(globalDataAccount.rewardPercent) && globalDataAccount.epochLength.eq(globalDataAccount.epochLockTime), "Incorrect parameter setting")
+  })
 });
