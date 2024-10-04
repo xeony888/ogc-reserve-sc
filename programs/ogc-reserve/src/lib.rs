@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, Token, TokenAccount, transfer, Transfer};
-declare_id!("3Z6QJxHxE6Po9L6Tkxwwc4cVSnckE9LuozowaicE2eSM");
+declare_id!("42b3W6c34GqwoxUgkrV4hdG9EiCWvLicHQ6iTKk7eWHs");
 
 const ADMIN: &str = "Ddi1GaugnX9yQz1WwK1b12m4o23rK1krZQMcnt2aNW97";
 const EPOCH_FIRST_END_TIME: u64 = 0; // use this to set first end time, making epochs end at a specific time of the day
@@ -13,7 +13,8 @@ pub mod ogc_reserve {
         ctx.accounts.global_data_account.epoch_end_time = EPOCH_FIRST_END_TIME;
         ctx.accounts.global_data_account.epoch_length = 10;
         ctx.accounts.global_data_account.reward_percent = 5;
-        ctx.accounts.global_data_account.mint = ctx.accounts.mint.key();
+        ctx.accounts.global_data_account.ogc_mint = ctx.accounts.ogc_mint.key();
+        ctx.accounts.global_data_account.ogg_mint = ctx.accounts.ogg_mint.key();
         Ok(())
     }
     pub fn modify_global_data(ctx: Context<ModifyGlobalData>, epoch_lock_time: u64, epoch_length: u64, reward_percent: u64) -> Result<()> {
@@ -186,18 +187,20 @@ pub struct GlobalDataAccount {
     pub epoch_lock_time: u64,
     pub epoch_length: u64,
     pub reward_percent: u64,
-    pub mint: Pubkey,
+    pub ogc_mint: Pubkey,
+    pub ogg_mint: Pubkey,
 }
 #[derive(Accounts)]
 pub struct Initialize<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
-    pub mint: Account<'info, Mint>,
+    pub ogc_mint: Account<'info, Mint>,
+    pub ogg_mint: Account<'info, Mint>,
     #[account(
         init,
         seeds = [b"global"],
         bump,
-        space = 8 + 8 + 8 + 8 + 8 + 8 + 32,
+        space = 8 + 8 + 8 + 8 + 8 + 8 + 32 + 32,
         payer = signer,
     )]
     pub global_data_account: Account<'info, GlobalDataAccount>,
@@ -205,7 +208,7 @@ pub struct Initialize<'info> {
         init,
         seeds = [b"holder"],
         bump,
-        token::mint = mint,
+        token::mint = ogc_mint,
         token::authority = program_authority,
         payer = signer,
     )]
@@ -341,7 +344,7 @@ pub struct CreateDataAccount<'info> {
     )]
     pub user_data_account: Account<'info, UserDataAccount>,
     #[account(
-        constraint = mint.key() == global_data_account.mint @ CustomError::InvalidMintAccount
+        constraint = mint.key() == global_data_account.ogg_mint @ CustomError::InvalidMintAccount
     )]
     pub mint: Account<'info, Mint>,
     #[account(

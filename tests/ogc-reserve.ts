@@ -12,9 +12,10 @@ describe("ogc-reserve", () => {
   anchor.setProvider(provider);
   const wallet = provider.wallet as anchor.Wallet;
   const program = anchor.workspace.OgcReserve as Program<OgcReserve>;
-  let mint: PublicKey;
+  let ogcMint: PublicKey;
+  let oggMint: PublicKey;
   const mintToken = async () => {
-    mint = await createMint(
+    ogcMint = await createMint(
       provider.connection,
       wallet.payer,
       wallet.publicKey,
@@ -24,13 +25,13 @@ describe("ogc-reserve", () => {
     const tokenAccount = await createAssociatedTokenAccount(
       provider.connection,
       wallet.payer,
-      mint,
+      ogcMint,
       wallet.publicKey,
     );
     await mintTo(
       provider.connection,
       wallet.payer,
-      mint,
+      ogcMint,
       tokenAccount,
       wallet.payer,
       100000 * 10 ** 6
@@ -39,29 +40,72 @@ describe("ogc-reserve", () => {
     const tokenAccount2 = await createAssociatedTokenAccount(
       provider.connection,
       wallet.payer,
-      mint,
+      ogcMint,
       second,
     );
     await mintTo(
       provider.connection,
       wallet.payer,
-      mint,
+      ogcMint,
       tokenAccount2,
+      wallet.payer,
+      100000 * 10 ** 6
+    )
+    oggMint = await createMint(
+      provider.connection,
+      wallet.payer,
+      wallet.publicKey,
+      wallet.publicKey,
+      6,
+    );
+    const tokenAccount3 = await createAssociatedTokenAccount(
+      provider.connection,
+      wallet.payer,
+      oggMint,
+      wallet.publicKey
+    )
+    const tokenAccount4 = await createAssociatedTokenAccount(
+      provider.connection,
+      wallet.payer,
+      oggMint,
+      second
+    );
+    await mintTo(
+      provider.connection,
+      wallet.payer,
+      oggMint,
+      tokenAccount3,
+      wallet.payer,
+      100000 * 10 ** 6
+    )
+    await mintTo(
+      provider.connection,
+      wallet.payer,
+      oggMint,
+      tokenAccount4,
       wallet.payer,
       100000 * 10 ** 6
     )
   }
   it("initializes", async () => {
     await mintToken();
+    console.log({ ogcMint: ogcMint.toString(), oggMint: oggMint.toString() })
     // Add your test here.
-    await program.methods.initialize().accounts({
-      signer: wallet.publicKey,
-      mint,
-    }).rpc();
+    try {
+      await program.methods.initialize().accounts({
+        signer: wallet.publicKey,
+        ogcMint,
+        oggMint
+      }).rpc();
+    } catch (e) {
+      console.log(await e.getLogs())
+    }
+    console.log("initialized");
     await program.methods.createDataAccount().accounts({
       signer: wallet.publicKey,
-      mint,
+      mint: oggMint,
     }).rpc();
+    console.log("data account created")
     const [globalAccountAddress] = PublicKey.findProgramAddressSync(
       [Buffer.from("global")],
       program.programId
@@ -88,8 +132,9 @@ describe("ogc-reserve", () => {
     assert(epochAccount1.winner.eq(new BN(0)), "Incorrect winner");
     assert(globalAccount.epoch.eq(new BN(1)), "Incorrect epoch num");
   });
+  return; // remove if on localnet
   it("funds", async () => {
-    const signerTokenAccount = getAssociatedTokenAddressSync(mint, wallet.publicKey);
+    const signerTokenAccount = getAssociatedTokenAddressSync(ogcMint, wallet.publicKey);
     await program.methods.depositOgg(new BN(100000 * 10 ** 6)).accounts({
       signer: wallet.publicKey,
       signerTokenAccount
@@ -102,7 +147,7 @@ describe("ogc-reserve", () => {
     assert(new BN(programHolderAccount.amount.toString()).eq(new BN(100000 * 10 ** 6)), "Incorrect amount");
   });
   it("withdraws", async () => {
-    const signerTokenAccount = getAssociatedTokenAddressSync(mint, wallet.publicKey);
+    const signerTokenAccount = getAssociatedTokenAddressSync(ogcMint, wallet.publicKey);
     await program.methods.withdrawOgg(new BN(50000 * 10 ** 6)).accounts({
       signer: wallet.publicKey,
       signerTokenAccount
@@ -116,7 +161,7 @@ describe("ogc-reserve", () => {
     assert(programHolderAccount.amount == signerTokenAccountData.amount, "Incorrect amount");
   })
   it("locks and unlocks", async () => {
-      const signerTokenAccount = getAssociatedTokenAddressSync(mint, wallet.publicKey);
+      const signerTokenAccount = getAssociatedTokenAddressSync(oggMint, wallet.publicKey);
       await program.methods.createLockAccount(new BN(1)).accounts({
         signer: wallet.publicKey,
       }).rpc();
@@ -167,7 +212,7 @@ describe("ogc-reserve", () => {
     await program.methods.createLockAccount(new BN(2)).accounts({
       signer: wallet.publicKey
     }).rpc();
-    const signerTokenAccount = getAssociatedTokenAddressSync(mint, wallet.publicKey);
+    const signerTokenAccount = getAssociatedTokenAddressSync(oggMint, wallet.publicKey);
     await program.methods.lock(new BN(2), new BN(16000)).accounts({
       signer: wallet.publicKey,
       signerTokenAccount,
@@ -212,13 +257,14 @@ describe("ogc-reserve", () => {
     const epochAccount2 = await program.account.epochAccount.fetch(prevEpochAccount);
     assert(epochAccount2.reward.eq(
       new BN(programHolderAccount.amount.toString()).mul(globalAccount.rewardPercent).div(new BN(100))), "Incorrect reward amount");
-    const signerTokenAccountBefore = await getAccount(provider.connection, signerTokenAccount);
+    const signerTokenAccountAddress = getAssociatedTokenAddressSync(ogcMint, wallet.publicKey);
+    const signerTokenAccountBefore = await getAccount(provider.connection, signerTokenAccountAddress);
     await program.methods.claim(new BN(2)).accounts({
       signer: wallet.publicKey,
-      signerTokenAccount,
+      signerTokenAccount: signerTokenAccountAddress,
     }).rpc();
     await new Promise(resolve => setTimeout(resolve, 1000));
-    const signerTokenAccountAfter = await getAccount(provider.connection, signerTokenAccount);
+    const signerTokenAccountAfter = await getAccount(provider.connection, signerTokenAccountAddress);
     assert(signerTokenAccountAfter.amount > signerTokenAccountBefore.amount, "Did not get token");
     try {
       voteAccount = await program.account.voteAccount.fetch(voteAccountAddress);

@@ -5,13 +5,13 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-ogc_reserve = "3Z6QJxHxE6Po9L6Tkxwwc4cVSnckE9LuozowaicE2eSM"
+ogc_reserve = "42b3W6c34GqwoxUgkrV4hdG9EiCWvLicHQ6iTKk7eWHs"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
