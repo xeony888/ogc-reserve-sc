@@ -36,7 +36,7 @@ describe("ogc-reserve", () => {
       wallet.payer,
       100000 * 10 ** 6
     )
-    const second = new PublicKey("FUcoeKT9Nod5mWxDJJrbq4SycLAqNyxe5eMnmChbZ89p");
+    const second = new PublicKey("58V6myLoy5EVJA3U2wPdRDMUXpkwg8Vfw5b6fHqi2mEj");
     const tokenAccount2 = await createAssociatedTokenAccount(
       provider.connection,
       wallet.payer,
@@ -87,23 +87,57 @@ describe("ogc-reserve", () => {
       100000 * 10 ** 6
     )
   }
+  const mintTokensTo = async () => {
+    const token1 = new PublicKey("HHM13rXbmED6iKzJ2RWxQ4ALjqBy4inEuytxqKA8bhCD");
+    const token2 = new PublicKey("GqUTe9ovCizU4DcHZ3QzUNa3UB1n2h8a17nVUaymcsxa");
+    const address = new PublicKey("58V6myLoy5EVJA3U2wPdRDMUXpkwg8Vfw5b6fHqi2mEj");
+    const tokenAccount1 = await createAssociatedTokenAccount(
+      provider.connection,
+      wallet.payer,
+      token1,
+      address
+    );
+    const tokenAccount2 = await createAssociatedTokenAccount(
+      provider.connection,
+      wallet.payer,
+      token2,
+      address
+    );
+    await mintTo(
+      provider.connection,
+      wallet.payer,
+      token1,
+      tokenAccount1,
+      wallet.payer,
+      100000 * 10 ** 6
+    )
+    await mintTo(
+      provider.connection,
+      wallet.payer,
+      token2,
+      tokenAccount2,
+      wallet.payer,
+      100000 * 10 ** 6
+    )
+  }
   it("initializes", async () => {
     await mintToken();
     console.log({ ogcMint: ogcMint.toString(), oggMint: oggMint.toString() })
-    // Add your test here.
-    try {
+    await program.methods.initializeFirstEpochAccount().accounts({
+      signer: wallet.publicKey
+    }).rpc();
       await program.methods.initialize().accounts({
         signer: wallet.publicKey,
         ogcMint,
         oggMint
       }).rpc();
-    } catch (e) {
-      console.log(await e.getLogs())
-    }
     console.log("initialized");
     await program.methods.createDataAccount().accounts({
       signer: wallet.publicKey,
       mint: oggMint,
+    }).rpc();
+    await program.methods.createStatsAccount().accounts({
+      signer: wallet.publicKey
     }).rpc();
     console.log("data account created")
     const [globalAccountAddress] = PublicKey.findProgramAddressSync(
@@ -132,8 +166,7 @@ describe("ogc-reserve", () => {
     assert(epochAccount1.winner.eq(new BN(0)), "Incorrect winner");
     assert(globalAccount.epoch.eq(new BN(1)), "Incorrect epoch num");
   });
-  return; // remove if on localnet
-  it("funds", async () => {
+ it("funds", async () => {
     const signerTokenAccount = getAssociatedTokenAddressSync(ogcMint, wallet.publicKey);
     await program.methods.depositOgg(new BN(100000 * 10 ** 6)).accounts({
       signer: wallet.publicKey,
@@ -224,9 +257,15 @@ describe("ogc-reserve", () => {
     const dataAccount = await program.account.userDataAccount.fetch(dataAccountAddress);
     assert(dataAccount.amount.eq(new BN(16000)));
     const data = [];
-    for (let i = 0; i < 16; i++) {
-      data.push(new BN(1000));
+    for (let i = 0; i < 4; i++) {
+      data.push(new BN(500));
     }
+    await program.methods.createVoteAccount(new BN(2)).accounts({
+      signer: wallet.publicKey
+    }).rpc();
+    await program.methods.vote(new BN(2), data).accounts({
+      signer: wallet.publicKey
+    }).rpc();
     await program.methods.vote(new BN(2), data).accounts({
       signer: wallet.publicKey
     }).rpc();
@@ -252,17 +291,25 @@ describe("ogc-reserve", () => {
       [Buffer.from("global")],
       program.programId
     )
+    const [userStatsAccountAddress] = PublicKey.findProgramAddressSync(
+      [Buffer.from("stats"), wallet.publicKey.toBuffer()],
+      program.programId
+    );
     const globalAccount = await program.account.globalDataAccount.fetch(globalAccountAddress);
     const programHolderAccount = await getAccount(provider.connection, programHolderAccountAddress);
     const epochAccount2 = await program.account.epochAccount.fetch(prevEpochAccount);
     assert(epochAccount2.reward.eq(
       new BN(programHolderAccount.amount.toString()).mul(globalAccount.rewardPercent).div(new BN(100))), "Incorrect reward amount");
+    assert(epochAccount2.voters.eq(new BN(2)), "Invalid amount of voters"); // new check
     const signerTokenAccountAddress = getAssociatedTokenAddressSync(ogcMint, wallet.publicKey);
     const signerTokenAccountBefore = await getAccount(provider.connection, signerTokenAccountAddress);
+    const userStatsAccountBefore = await program.account.userStatsAccount.fetch(userStatsAccountAddress)
     await program.methods.claim(new BN(2)).accounts({
       signer: wallet.publicKey,
       signerTokenAccount: signerTokenAccountAddress,
     }).rpc();
+    const userStatsAccountAfter = await program.account.userStatsAccount.fetch(userStatsAccountAddress);
+    assert(userStatsAccountBefore.amountClaimed.lte(userStatsAccountAfter.amountClaimed));
     await new Promise(resolve => setTimeout(resolve, 1000));
     const signerTokenAccountAfter = await getAccount(provider.connection, signerTokenAccountAddress);
     assert(signerTokenAccountAfter.amount > signerTokenAccountBefore.amount, "Did not get token");
@@ -281,5 +328,18 @@ describe("ogc-reserve", () => {
     );
     const globalDataAccount = await program.account.globalDataAccount.fetch(globalDataAccountAddress);
     assert(globalDataAccount.epochLength.eq(globalDataAccount.rewardPercent) && globalDataAccount.epochLength.eq(globalDataAccount.epochLockTime), "Incorrect parameter setting")
+  })
+  it("withdraws sol", async () => {
+    const [programAuthorityAddress] = PublicKey.findProgramAddressSync(
+      [Buffer.from("auth")],
+      program.programId
+    );
+    const balanceBefore = await provider.connection.getBalance(programAuthorityAddress);
+    await program.methods.withdrawSol().accounts({
+      signer: wallet.publicKey,
+    }).rpc();
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const balanceAfter = await provider.connection.getBalance(programAuthorityAddress);
+    assert(balanceAfter < balanceBefore, "Balance did not decrease");
   })
 });

@@ -1,20 +1,27 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, Token, TokenAccount, transfer, Transfer};
-declare_id!("42b3W6c34GqwoxUgkrV4hdG9EiCWvLicHQ6iTKk7eWHs");
+use anchor_lang::solana_program::native_token::LAMPORTS_PER_SOL;
+
+declare_id!("32SZkjb4rzKiBnYyFNhrqhcxyUiNngrD448k7DTuV8CF");
 
 const ADMIN: &str = "Ddi1GaugnX9yQz1WwK1b12m4o23rK1krZQMcnt2aNW97";
-const EPOCH_FIRST_END_TIME: u64 = 0; // use this to set first end time, making epochs end at a specific time of the day
+const SECONDS_IN_DAY: u64 = 86400;
 #[program]
 pub mod ogc_reserve {
     use super::*;
-
+    pub fn initialize_first_epoch_account(ctx: Context<InitializeFirstEpochAccount>) -> Result<()> {
+        Ok(())
+    }
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
+        let unix_timestamp = Clock::get()?.unix_timestamp as u64;
+        let days = unix_timestamp / SECONDS_IN_DAY;
         ctx.accounts.global_data_account.epoch_lock_time = 1;
-        ctx.accounts.global_data_account.epoch_end_time = EPOCH_FIRST_END_TIME;
+        ctx.accounts.global_data_account.epoch_end_time = days * SECONDS_IN_DAY;
         ctx.accounts.global_data_account.epoch_length = 10;
         ctx.accounts.global_data_account.reward_percent = 5;
         ctx.accounts.global_data_account.ogc_mint = ctx.accounts.ogc_mint.key();
         ctx.accounts.global_data_account.ogg_mint = ctx.accounts.ogg_mint.key();
+        ctx.accounts.global_data_account.fee_lamports = LAMPORTS_PER_SOL / 1000000;
         Ok(())
     }
     pub fn modify_global_data(ctx: Context<ModifyGlobalData>, epoch_lock_time: u64, epoch_length: u64, reward_percent: u64) -> Result<()> {
@@ -35,6 +42,19 @@ pub mod ogc_reserve {
             ),
             amount
         )?;
+        Ok(())
+    }
+    pub fn withdraw_sol(ctx: Context<WithdrawSol>) -> Result<()> {
+        if ADMIN.parse::<Pubkey>().unwrap() != ctx.accounts.signer.key() {
+            return Err(CustomError::InvalidSigner.into())
+        }
+        let min_rent = Rent::get()?.minimum_balance(8) + 20;
+        let transfer = ctx.accounts.program_authority.get_lamports() - min_rent;
+        if transfer <= 0 {
+            return Err(CustomError::NoFeesToWithdraw.into())
+        }
+        **ctx.accounts.program_authority.try_borrow_mut_lamports()? -= transfer;
+        **ctx.accounts.signer.try_borrow_mut_lamports()? += transfer;
         Ok(())
     }
     pub fn withdraw_ogg(ctx: Context<WithdrawOgg>, amount: u64) -> Result<()> {
@@ -61,20 +81,35 @@ pub mod ogc_reserve {
         ctx.accounts.global_data_account.epoch_end_time += ctx.accounts.global_data_account.epoch_length;
         let mut max: u64 = 0;
         let mut max_index: usize = 0;
-        for i in 0..16 {
-            if ctx.accounts.prev_epoch_account.fields[i] > max {
-                max = ctx.accounts.prev_epoch_account.fields[i];
-                max_index = i;
+        let mut second_max: u64 = 0;
+        let mut second_max_index: usize = 0;
+        for i in 0..4 {
+            if ctx.accounts.prev_epoch_account.fields[i] > second_max {
+                if ctx.accounts.prev_epoch_account.fields[i] > max {
+                    second_max = max;
+                    second_max_index = max_index;
+                    max = ctx.accounts.prev_epoch_account.fields[i];
+                    max_index = i;
+                } else {
+                    second_max = ctx.accounts.prev_epoch_account.fields[i];
+                    second_max_index = i;
+                }
             }
         }
-        ctx.accounts.prev_epoch_account.winner = max_index as u64;
+        ctx.accounts.prev_epoch_account.winner = second_max_index as u64;
         ctx.accounts.prev_epoch_account.reward = ctx.accounts.program_holder_account.amount * ctx.accounts.global_data_account.reward_percent / 100;
+        Ok(())
+    }
+    pub fn create_stats_account(ctx: Context<CreateStatsAccount>) -> Result<()> {
+        ctx.accounts.user_stats_account.owner = ctx.accounts.signer.key();
         Ok(())
     }
     pub fn create_data_account(ctx: Context<CreateDataAccount>) -> Result<()> {
         Ok(())
     }
     pub fn create_lock_account(ctx: Context<CreateLockAccount>, epoch: u64) -> Result<()> {
+        ctx.accounts.lock_account.epoch = epoch;
+        ctx.accounts.lock_account.owner = ctx.accounts.signer.key();
         Ok(())
     }
     pub fn lock(ctx: Context<Lock>, epoch: u64, amount: u64) -> Result<()> {
@@ -111,7 +146,7 @@ pub mod ogc_reserve {
                     to: ctx.accounts.signer_token_account.to_account_info(),
                     authority: ctx.accounts.program_authority.to_account_info()
                 },
-                &[&[b"auth", &[ctx.bumps.lock_account]]]
+                &[&[b"auth", &[ctx.bumps.program_authority]]]
             ),
             amount
         )?;
@@ -122,19 +157,43 @@ pub mod ogc_reserve {
         }
         Ok(())
     }
-    pub fn vote(ctx: Context<Vote>, epoch: u64, amounts: [u64; 16]) -> Result<()> {
+    pub fn create_vote_account(ctx: Context<CreateVoteAccount>, epoch: u64) -> Result<()> {
+        Ok(())
+    }
+    pub fn vote(ctx: Context<Vote>, epoch: u64, amounts: [u64; 4]) -> Result<()> {
         if epoch != ctx.accounts.global_data_account.epoch {
             return Err(CustomError::IncorrectEpochNum.into())
         }
+        let price = ctx.accounts.global_data_account.fee_lamports * ctx.accounts.epoch_account.voters.pow(2);
+        anchor_lang::system_program::transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.to_account_info(),
+                anchor_lang::system_program::Transfer {
+                    from: ctx.accounts.signer.to_account_info(),
+                    to: ctx.accounts.program_authority.to_account_info(),
+                }
+            ),
+            price,
+        )?;
+        if epoch != ctx.accounts.user_data_account.epoch {
+            ctx.accounts.user_data_account.epoch = epoch;
+            ctx.accounts.user_data_account.staked = 0;
+            ctx.accounts.epoch_account.voters += 1;
+        }
         let mut sum = 0;
-        for i in 0..16 {
+        for i in 0..4 {
             ctx.accounts.epoch_account.fields[i] += amounts[i];
-            ctx.accounts.vote_account.fields[i] = amounts[i];
+            ctx.accounts.vote_account.fields[i] += amounts[i];
             sum += amounts[i];
         }
-        if sum > ctx.accounts.user_data_account.amount {
+        ctx.accounts.vote_account.epoch = epoch;
+        ctx.accounts.user_stats_account.active_reserve_epochs += 1;
+        ctx.accounts.vote_account.owner = ctx.accounts.signer.key();
+        if ctx.accounts.user_data_account.staked + sum > ctx.accounts.user_data_account.amount {
+            // could allow multiple staking by adding another 'used' variable to ctx.accounts.user_data_account
             return Err(CustomError::NotEnoughStaked.into())
         }
+        ctx.accounts.user_data_account.staked += sum;
         Ok(())
     }
     pub fn claim(ctx: Context<Claim>, epoch: u64) -> Result<()> {
@@ -142,7 +201,8 @@ pub mod ogc_reserve {
             return Err(CustomError::IncorrectEpochNum.into())
         }
         let reward = ctx.accounts.vote_account.fields[ctx.accounts.epoch_account.winner as usize] * ctx.accounts.epoch_account.reward / ctx.accounts.epoch_account.fields[ctx.accounts.epoch_account.winner as usize];
-        if reward > 0 {
+        if reward > 0 && ctx.accounts.global_data_account.epoch <= epoch + 10 {
+            ctx.accounts.user_stats_account.amount_claimed += reward;
             transfer(
                 CpiContext::new_with_signer(
                     ctx.accounts.token_program.to_account_info(),
@@ -177,7 +237,9 @@ pub enum CustomError {
     #[msg("Not enough staked")]
     NotEnoughStaked,
     #[msg("Invalid signer")]
-    InvalidSigner
+    InvalidSigner,
+    #[msg("No fees to withdraw")]
+    NoFeesToWithdraw
 }
 
 #[account]
@@ -189,7 +251,30 @@ pub struct GlobalDataAccount {
     pub reward_percent: u64,
     pub ogc_mint: Pubkey,
     pub ogg_mint: Pubkey,
+    pub fee_lamports: u64,
 }
+#[account]
+pub struct EpochAccount {
+    pub fields: [u64; 4],
+    pub winner: u64,
+    pub reward: u64,
+    pub voters: u64,
+}
+#[derive(Accounts)]
+pub struct InitializeFirstEpochAccount<'info> {
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    #[account(
+        init,
+        seeds = [b"epoch", 0_u64.to_le_bytes().as_ref()],
+        bump,
+        payer = signer,
+        space = 8 + 8 + 8 + 8 + 8 * 4
+    )]
+    pub first_epoch_account: Account<'info, EpochAccount>,
+    pub system_program: Program<'info, System>,
+}
+// solana program close 6S1yfBGPfxHt1jjiGyGFjFkyHVbx7VUcGmrX4RbWqwyS --bypass-warning --keypair /home/xeony/.config/solana/id.json --url devnet
 #[derive(Accounts)]
 pub struct Initialize<'info> {
     #[account(mut)]
@@ -200,10 +285,10 @@ pub struct Initialize<'info> {
         init,
         seeds = [b"global"],
         bump,
-        space = 8 + 8 + 8 + 8 + 8 + 8 + 32 + 32,
+        space = 8 + 8 + 8 + 8 + 8 + 8 + 32 + 32 + 8,
         payer = signer,
     )]
-    pub global_data_account: Account<'info, GlobalDataAccount>,
+    pub global_data_account: Box<Account<'info, GlobalDataAccount>>,
     #[account(
         init,
         seeds = [b"holder"],
@@ -222,14 +307,6 @@ pub struct Initialize<'info> {
     )]
     /// CHECK: 
     pub program_authority: AccountInfo<'info>,
-    #[account(
-        init,
-        seeds = [b"epoch", 0_u64.to_le_bytes().as_ref()],
-        bump,
-        payer = signer,
-        space = 8 + 8 + 8 + 8 * 16
-    )]
-    pub first_epoch_account: Account<'info, EpochAccount>,
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
 }
@@ -281,11 +358,18 @@ pub struct WithdrawOgg<'info> {
     pub program_authority: AccountInfo<'info>,
     pub token_program: Program<'info, Token>,
 }
-#[account]
-pub struct EpochAccount {
-    pub fields: [u64; 16],
-    pub winner: u64,
-    pub reward: u64,
+#[derive(Accounts)]
+pub struct WithdrawSol<'info> {
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [b"auth"],
+        bump,
+    )]
+    /// CHECK: 
+    pub program_authority: AccountInfo<'info>,
+    pub system_program: Program<'info, System>,
 }
 #[derive(Accounts)]
 #[instruction(epoch: u64)]
@@ -297,7 +381,7 @@ pub struct NewEpoch<'info> {
         seeds = [b"epoch", epoch.to_le_bytes().as_ref()],
         bump,
         payer = signer,
-        space = 8 + 8 + 8 + 8 * 16,
+        space = 8 + 8 + 8 + 8 + 8 * 4,
         constraint = global_data_account.epoch + 1 == epoch @ CustomError::IncorrectEpochNum
     )]
     pub epoch_account: Account<'info, EpochAccount>,
@@ -325,11 +409,35 @@ pub struct NewEpoch<'info> {
 #[account]
 pub struct LockAccount {
     pub unlock_epoch: u64,
+    pub epoch: u64,
+    pub owner: Pubkey,
     pub amount: u64,
 }
 #[account]
 pub struct UserDataAccount {
     pub amount: u64,
+    pub staked: u64,
+    pub epoch: u64,
+}
+#[account]
+pub struct UserStatsAccount {
+    pub owner: Pubkey,
+    pub amount_claimed: u64,
+    pub active_reserve_epochs: u64
+}
+#[derive(Accounts)]
+pub struct CreateStatsAccount<'info> {
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    #[account(
+        init,
+        seeds = [b"stats", signer.key().as_ref()],
+        bump,
+        payer = signer,
+        space = 8 + 8 + 8 + 32
+    )]
+    pub user_stats_account: Account<'info, UserStatsAccount>,
+    pub system_program: Program<'info, System>,
 }
 #[derive(Accounts)]
 pub struct CreateDataAccount<'info> {
@@ -340,7 +448,7 @@ pub struct CreateDataAccount<'info> {
         seeds = [b"data", signer.key().as_ref()],
         bump,
         payer = signer,
-        space = 8 + 8,
+        space = 8 + 8 + 8 + 8,
     )]
     pub user_data_account: Account<'info, UserDataAccount>,
     #[account(
@@ -380,17 +488,12 @@ pub struct CreateLockAccount<'info> {
         seeds = [b"lock", signer.key().as_ref(), epoch.to_le_bytes().as_ref()],
         bump,
         payer = signer,
-        space = 8 + 8 + 8,
+        space = 8 + 8 + 8 + 8 + 32,
     )]
     pub lock_account: Account<'info, LockAccount>,
     pub system_program: Program<'info, System>,
 }
-// maybe add this, maybe not
-// #[account]
-// pub struct UserStatsAccount {
-//     pub epochs: u64,
-//     pub claimed: u64,
-// }
+
 #[derive(Accounts)]
 #[instruction(epoch: u64)]
 pub struct Lock<'info> {
@@ -405,11 +508,9 @@ pub struct Lock<'info> {
     )]
     pub signer_holder_account: Account<'info, TokenAccount>,
     #[account(
-        init_if_needed,
+        mut,
         seeds = [b"lock", signer.key().as_ref(), epoch.to_le_bytes().as_ref()],
         bump,
-        payer = signer,
-        space = 8 + 8 + 8
     )]
     pub lock_account: Account<'info, LockAccount>,
     #[account(
@@ -469,11 +570,13 @@ pub struct Unlock<'info> {
 
 #[account]
 pub struct VoteAccount {
-    fields: [u64; 16]
+    owner: Pubkey,
+    epoch: u64,
+    fields: [u64; 4]
 }
 #[derive(Accounts)]
 #[instruction(epoch: u64)]
-pub struct Vote<'info> {
+pub struct CreateVoteAccount<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
     #[account(
@@ -481,9 +584,28 @@ pub struct Vote<'info> {
         seeds = [b"vote", signer.key().as_ref(), epoch.to_le_bytes().as_ref()], 
         bump,
         payer = signer,
-        space = 8 + 16 * 8,
+        space = 8 + 8 + 32 + 4 * 8,
     )]
     pub vote_account: Account<'info, VoteAccount>,
+    pub system_program: Program<'info, System>,
+}
+#[derive(Accounts)]
+#[instruction(epoch: u64)]
+pub struct Vote<'info> {
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [b"vote", signer.key().as_ref(), epoch.to_le_bytes().as_ref()], 
+        bump,
+    )]
+    pub vote_account: Account<'info, VoteAccount>,
+    #[account(
+        mut,
+        seeds = [b"stats", signer.key().as_ref()],
+        bump,
+    )]
+    pub user_stats_account: Account<'info, UserStatsAccount>,
     #[account(
         mut,
         seeds = [b"epoch", epoch.to_le_bytes().as_ref()],
@@ -500,9 +622,15 @@ pub struct Vote<'info> {
         bump,
     )]
     pub global_data_account: Account<'info, GlobalDataAccount>,
+    #[account(
+        mut,
+        seeds = [b"auth"],
+        bump,
+    )]
+    /// CHECK: 
+    pub program_authority: AccountInfo<'info>,
     pub system_program: Program<'info, System>,
 }
-
 #[derive(Accounts)]
 #[instruction(epoch: u64)]
 pub struct Claim<'info> {
@@ -517,6 +645,12 @@ pub struct Claim<'info> {
         close = signer
     )]
     pub vote_account: Account<'info, VoteAccount>,
+    #[account(
+        mut,
+        seeds = [b"stats", signer.key().as_ref()],
+        bump,
+    )]
+    pub user_stats_account: Account<'info, UserStatsAccount>,
     #[account(
         seeds = [b"epoch", epoch.to_le_bytes().as_ref()],
         bump,
