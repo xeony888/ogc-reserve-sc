@@ -296,10 +296,8 @@ describe("ogc-reserve", () => {
       program.programId
     );
     const globalAccount = await program.account.globalDataAccount.fetch(globalAccountAddress);
-    const programHolderAccount = await getAccount(provider.connection, programHolderAccountAddress);
     const epochAccount2 = await program.account.epochAccount.fetch(prevEpochAccount);
-    assert(epochAccount2.reward.eq(
-      new BN(programHolderAccount.amount.toString()).mul(globalAccount.rewardPercent).div(new BN(100))), "Incorrect reward amount");
+    assert(epochAccount2.reward.eq(globalAccount.rewardAmount), "Incorrect reward amount");
     assert(epochAccount2.voters.eq(new BN(2)), "Invalid amount of voters"); // new check
     const signerTokenAccountAddress = getAssociatedTokenAddressSync(ogcMint, wallet.publicKey);
     const signerTokenAccountBefore = await getAccount(provider.connection, signerTokenAccountAddress);
@@ -327,7 +325,7 @@ describe("ogc-reserve", () => {
       program.programId
     );
     const globalDataAccount = await program.account.globalDataAccount.fetch(globalDataAccountAddress);
-    assert(globalDataAccount.epochLength.eq(globalDataAccount.rewardPercent) && globalDataAccount.epochLength.eq(globalDataAccount.epochLockTime), "Incorrect parameter setting")
+    assert(globalDataAccount.epochLength.eq(globalDataAccount.rewardAmount) && globalDataAccount.epochLength.eq(globalDataAccount.epochLockTime), "Incorrect parameter setting")
   })
   it("withdraws sol", async () => {
     const [programAuthorityAddress] = PublicKey.findProgramAddressSync(

@@ -5,7 +5,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-ogc_reserve = "32SZkjb4rzKiBnYyFNhrqhcxyUiNngrD448k7DTuV8CF"
+ogc_reserve = "AsSVm8CNrUmEAwwgDNvpeRkpqbxJQARgXU4ycYQXkQma"
 
 [registry]
 url = "https://api.apr.dev"

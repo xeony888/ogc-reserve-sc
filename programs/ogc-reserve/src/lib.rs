@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, Token, TokenAccount, transfer, Transfer};
 use anchor_lang::solana_program::native_token::LAMPORTS_PER_SOL;
 
-declare_id!("32SZkjb4rzKiBnYyFNhrqhcxyUiNngrD448k7DTuV8CF");
+declare_id!("AsSVm8CNrUmEAwwgDNvpeRkpqbxJQARgXU4ycYQXkQma");
 
 const ADMIN: &str = "Ddi1GaugnX9yQz1WwK1b12m4o23rK1krZQMcnt2aNW97";
 const SECONDS_IN_DAY: u64 = 86400;
@@ -18,15 +18,15 @@ pub mod ogc_reserve {
         ctx.accounts.global_data_account.epoch_lock_time = 1;
         ctx.accounts.global_data_account.epoch_end_time = days * SECONDS_IN_DAY;
         ctx.accounts.global_data_account.epoch_length = 10;
-        ctx.accounts.global_data_account.reward_percent = 5;
+        ctx.accounts.global_data_account.reward_amount = 1000;
         ctx.accounts.global_data_account.ogc_mint = ctx.accounts.ogc_mint.key();
         ctx.accounts.global_data_account.ogg_mint = ctx.accounts.ogg_mint.key();
         ctx.accounts.global_data_account.fee_lamports = LAMPORTS_PER_SOL / 1000000;
         Ok(())
     }
-    pub fn modify_global_data(ctx: Context<ModifyGlobalData>, epoch_lock_time: u64, epoch_length: u64, reward_percent: u64) -> Result<()> {
+    pub fn modify_global_data(ctx: Context<ModifyGlobalData>, epoch_lock_time: u64, epoch_length: u64, reward_amount: u64) -> Result<()> {
         ctx.accounts.global_data_account.epoch_lock_time = epoch_lock_time;
-        ctx.accounts.global_data_account.reward_percent = reward_percent;
+        ctx.accounts.global_data_account.reward_amount = reward_amount;
         ctx.accounts.global_data_account.epoch_length = epoch_length;
         Ok(())
     }
@@ -97,7 +97,7 @@ pub mod ogc_reserve {
             }
         }
         ctx.accounts.prev_epoch_account.winner = second_max_index as u64;
-        ctx.accounts.prev_epoch_account.reward = ctx.accounts.program_holder_account.amount * ctx.accounts.global_data_account.reward_percent / 100;
+        ctx.accounts.prev_epoch_account.reward = ctx.accounts.global_data_account.reward_amount;
         Ok(())
     }
     pub fn create_stats_account(ctx: Context<CreateStatsAccount>) -> Result<()> {
@@ -200,7 +200,8 @@ pub mod ogc_reserve {
         if epoch >= ctx.accounts.global_data_account.epoch {
             return Err(CustomError::IncorrectEpochNum.into())
         }
-        let reward = ctx.accounts.vote_account.fields[ctx.accounts.epoch_account.winner as usize] * ctx.accounts.epoch_account.reward / ctx.accounts.epoch_account.fields[ctx.accounts.epoch_account.winner as usize];
+        let base_amount = std::cmp::min(ctx.accounts.epoch_account.reward, ctx.accounts.program_holder_account.amount);
+        let reward = ctx.accounts.vote_account.fields[ctx.accounts.epoch_account.winner as usize] * base_amount / ctx.accounts.epoch_account.fields[ctx.accounts.epoch_account.winner as usize];
         if reward > 0 && ctx.accounts.global_data_account.epoch <= epoch + 10 {
             ctx.accounts.user_stats_account.amount_claimed += reward;
             transfer(
@@ -248,7 +249,7 @@ pub struct GlobalDataAccount {
     pub epoch_end_time: u64,
     pub epoch_lock_time: u64,
     pub epoch_length: u64,
-    pub reward_percent: u64,
+    pub reward_amount: u64,
     pub ogc_mint: Pubkey,
     pub ogg_mint: Pubkey,
     pub fee_lamports: u64,
@@ -274,7 +275,7 @@ pub struct InitializeFirstEpochAccount<'info> {
     pub first_epoch_account: Account<'info, EpochAccount>,
     pub system_program: Program<'info, System>,
 }
-// solana program close 6S1yfBGPfxHt1jjiGyGFjFkyHVbx7VUcGmrX4RbWqwyS --bypass-warning --keypair /home/xeony/.config/solana/id.json --url devnet
+// solana program close 32SZkjb4rzKiBnYyFNhrqhcxyUiNngrD448k7DTuV8CF --bypass-warning --keypair /home/xeony/.config/solana/id.json --url devnet
 #[derive(Accounts)]
 pub struct Initialize<'info> {
     #[account(mut)]
