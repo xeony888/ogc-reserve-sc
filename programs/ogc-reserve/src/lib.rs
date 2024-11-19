@@ -2,9 +2,9 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, Token, TokenAccount, transfer, Transfer};
 use anchor_lang::solana_program::native_token::LAMPORTS_PER_SOL;
 
-declare_id!("AsSVm8CNrUmEAwwgDNvpeRkpqbxJQARgXU4ycYQXkQma");
+declare_id!("Bwombv4YnhcWAo7QHkqMsbem3Y88YdDStk6yn6FnNHTX");
 
-const ADMIN: &str = "Ddi1GaugnX9yQz1WwK1b12m4o23rK1krZQMcnt2aNW97";
+const ADMIN: &str = "oggzGFTgRM61YmhEbgWeivVmQx8bSAdBvsPGqN3ZfxN";
 const SECONDS_IN_DAY: u64 = 86400;
 #[program]
 pub mod ogc_reserve {
@@ -13,11 +13,11 @@ pub mod ogc_reserve {
         Ok(())
     }
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-        let unix_timestamp = Clock::get()?.unix_timestamp as u64;
-        let days = unix_timestamp / SECONDS_IN_DAY;
+        // let unix_timestamp = Clock::get()?.unix_timestamp as u64;
+        // let days = unix_timestamp / SECONDS_IN_DAY;
         ctx.accounts.global_data_account.epoch_lock_time = 1;
-        ctx.accounts.global_data_account.epoch_end_time = days * SECONDS_IN_DAY;
-        ctx.accounts.global_data_account.epoch_length = 10;
+        ctx.accounts.global_data_account.epoch_end_time = 0;
+        ctx.accounts.global_data_account.epoch_length = 1;
         ctx.accounts.global_data_account.reward_amount = 1000;
         ctx.accounts.global_data_account.ogc_mint = ctx.accounts.ogc_mint.key();
         ctx.accounts.global_data_account.ogg_mint = ctx.accounts.ogg_mint.key();
@@ -78,7 +78,8 @@ pub mod ogc_reserve {
             return Err(CustomError::EpochNotOver.into())
         }
         ctx.accounts.global_data_account.epoch += 1;
-        ctx.accounts.global_data_account.epoch_end_time += ctx.accounts.global_data_account.epoch_length;
+        let steps = time / ctx.accounts.global_data_account.epoch_length;
+        ctx.accounts.global_data_account.epoch_end_time = (steps + 1) * ctx.accounts.global_data_account.epoch_length;
         let mut max: u64 = 0;
         let mut max_index: usize = 0;
         let mut second_max: u64 = 0;
@@ -180,7 +181,7 @@ pub mod ogc_reserve {
             ctx.accounts.user_data_account.staked = 0;
             ctx.accounts.epoch_account.voters += 1;
         }
-        let mut sum = 0;
+        let mut sum: u64 = 0;
         for i in 0..4 {
             ctx.accounts.epoch_account.fields[i] += amounts[i];
             ctx.accounts.vote_account.fields[i] += amounts[i];
@@ -190,7 +191,6 @@ pub mod ogc_reserve {
         ctx.accounts.user_stats_account.active_reserve_epochs += 1;
         ctx.accounts.vote_account.owner = ctx.accounts.signer.key();
         if ctx.accounts.user_data_account.staked + sum > ctx.accounts.user_data_account.amount {
-            // could allow multiple staking by adding another 'used' variable to ctx.accounts.user_data_account
             return Err(CustomError::NotEnoughStaked.into())
         }
         ctx.accounts.user_data_account.staked += sum;
@@ -275,7 +275,7 @@ pub struct InitializeFirstEpochAccount<'info> {
     pub first_epoch_account: Account<'info, EpochAccount>,
     pub system_program: Program<'info, System>,
 }
-// solana program close 32SZkjb4rzKiBnYyFNhrqhcxyUiNngrD448k7DTuV8CF --bypass-warning --keypair /home/xeony/.config/solana/id.json --url devnet
+// solana program close 6B4ASnWa6CdF7tWC8vRfdrpU1PdDuDVxWyieLC5tqUjN --bypass-warning --keypair /home/xeony/.config/solana/id.json --url devnet
 #[derive(Accounts)]
 pub struct Initialize<'info> {
     #[account(mut)]
@@ -361,7 +361,10 @@ pub struct WithdrawOgg<'info> {
 }
 #[derive(Accounts)]
 pub struct WithdrawSol<'info> {
-    #[account(mut)]
+    #[account(
+        mut,
+        constraint = signer.key() == ADMIN.parse::<Pubkey>().unwrap() @ CustomError::InvalidSigner
+    )]
     pub signer: Signer<'info>,
     #[account(
         mut,
@@ -614,6 +617,7 @@ pub struct Vote<'info> {
     )]
     pub epoch_account: Account<'info, EpochAccount>,
     #[account(
+        mut,
         seeds = [b"data", signer.key().as_ref()],
         bump,
     )]
@@ -677,3 +681,7 @@ pub struct Claim<'info> {
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
 }
+/*
+solana program deploy --skip-fee-check ./program.so --with-compute-unit-price 100 --use-rpc --max-sign-attempts 1000
+solana program deploy --skip-fee-check ./target/deploy/ogc_reserve.so  --with-compute-unit-price 100 --use-rpc --max-sign-attempts 1000 --keypair /home/xeony/.config/solana/id.json
+*/

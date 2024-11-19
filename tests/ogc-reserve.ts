@@ -298,7 +298,7 @@ describe("ogc-reserve", () => {
     const globalAccount = await program.account.globalDataAccount.fetch(globalAccountAddress);
     const epochAccount2 = await program.account.epochAccount.fetch(prevEpochAccount);
     assert(epochAccount2.reward.eq(globalAccount.rewardAmount), "Incorrect reward amount");
-    assert(epochAccount2.voters.eq(new BN(2)), "Invalid amount of voters"); // new check
+    assert(epochAccount2.voters.eq(new BN(1)), "Invalid amount of voters"); 
     const signerTokenAccountAddress = getAssociatedTokenAddressSync(ogcMint, wallet.publicKey);
     const signerTokenAccountBefore = await getAccount(provider.connection, signerTokenAccountAddress);
     const userStatsAccountBefore = await program.account.userStatsAccount.fetch(userStatsAccountAddress)
@@ -316,6 +316,49 @@ describe("ogc-reserve", () => {
       assert(false, "vote account not deleted");
     } catch (e) { }
   });
+  it("fails to vote too much", async () => {
+    await program.methods.createVoteAccount(new BN(3)).accounts({
+      signer: wallet.publicKey
+    }).rpc();
+    let data = Array.from({length: 4}).map(() => new BN(10000));
+    try {
+      await program.methods.vote(new BN(3), data).accounts({
+        signer: wallet.publicKey
+      }).rpc();
+      assert(false, "Did not fail at first staking")
+    } catch (e) {
+      if (e.name === "AssertionError") {
+        throw new Error("Did not fail at first staking: " + e.message);
+      }
+    }
+    data = Array.from({length: 4}).map(() => new BN(2000));
+    try {
+      const [userDataAccountAddress] = PublicKey.findProgramAddressSync(
+        [Buffer.from("data"), wallet.publicKey.toBuffer()],
+        program.programId
+      );
+      await program.methods.vote(new BN(3), data).accounts({
+        signer: wallet.publicKey
+      }).rpc();      
+      let dataAccount = await program.account.userDataAccount.fetch(userDataAccountAddress);
+      assert(dataAccount.staked.eq(new BN(2000).mul(new BN(4))), "Incorrect amount staked 1");
+      await program.methods.vote(new BN(3), data).accounts({
+        signer: wallet.publicKey
+      }).rpc();
+      dataAccount = await program.account.userDataAccount.fetch(userDataAccountAddress);
+      assert(dataAccount.staked.eq(new BN(2000).mul(new BN(8))), "Incorrect amount staked 2");
+      await program.methods.vote(new BN(3), data).accounts({
+        signer: wallet.publicKey
+      }).rpc();
+      dataAccount = await program.account.userDataAccount.fetch(userDataAccountAddress);
+      assert(dataAccount.staked.eq(new BN(2000).mul(new BN(12))), "Incorrect amount staked 3");
+      assert(false, "Did not fail at multiple staking")
+    } catch(e) {
+      if (e.name === "AssertionError") {
+        throw new Error("Did not fail at multiple staking: " + e.message);
+      }
+    }
+  })
   it("modifies global data", async () => {
     await program.methods.modifyGlobalData(new BN(100), new BN(100), new BN(100)).accounts({
       signer: wallet.publicKey
